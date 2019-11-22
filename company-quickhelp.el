@@ -119,7 +119,7 @@ be triggered manually using `company-quickhelp-show'."
   (company-quickhelp--goto-max-line)
   (let ((truncated (< (point-at-eol) (point-max))))
     (company-quickhelp--skip-footers-backwards)
-    (list :doc (buffer-substring-no-properties start (point-at-eol))
+    (list :doc (buffer-substring start (point-at-eol))
           :truncated truncated)))
 
 (defun company-quickhelp--completing-read (prompt candidates &rest rest)
@@ -140,10 +140,12 @@ just grab the first candidate and press forward."
           ;; The company backend can either return a buffer with the doc or a
           ;; cons containing the doc buffer and a position at which to start
           ;; reading.
-          (let ((doc-buffer (if (consp doc) (car doc) doc))
-                (doc-begin (when (consp doc) (cdr doc))))
-            (with-current-buffer doc-buffer
-              (company-quickhelp--docstring-from-buffer (or doc-begin (point-min))))))))))
+          (let* ((doc-buffer (if (consp doc) (car doc) doc))
+                 (doc-begin (when (consp doc) (cdr doc)))
+                 (docstring (with-current-buffer doc-buffer
+                              (company-quickhelp--docstring-from-buffer (or doc-begin (point-min))))))
+            (kill-buffer doc-buffer)
+            docstring))))))
 
 (defun company-quickhelp--doc (selected)
   (cl-letf (((symbol-function 'completing-read)
@@ -167,52 +169,45 @@ currently active `company' completion candidate."
   (let ((company-quickhelp-delay 0.01))
     (company-quickhelp--set-timer)))
 
-(defun company-quickhelp--hide ()
-  (when (company-quickhelp-pos-tip-available-p)
-    (pos-tip-hide)))
+(defun company-quickhelp--hide (&optional arg)
+  (if (and company-quickhelp-window-to-delete
+           (window-live-p company-quickhelp-window-to-delete))
+      (delete-window company-quickhelp-window-to-delete)
+    (when-let ((window (get-buffer-window company-quickhelp-buffer)))
+      (quit-window nil window))))
+
+(defvar company-quickhelp-window-to-delete nil)
 
 (defun company-quickhelp--show ()
-  (when (company-quickhelp-pos-tip-available-p)
-    (company-quickhelp--cancel-timer)
-    (while-no-input
-      (let* ((selected (nth company-selection company-candidates))
-             (doc (let ((inhibit-message t))
-                    (company-quickhelp--doc selected)))
-             (width 80)
-             (timeout 300)
-             (ovl company-pseudo-tooltip-overlay)
-             (overlay-width (* (frame-char-width)
-                               (if ovl (overlay-get ovl 'company-width) 0)))
-             (overlay-position (* (frame-char-width)
-                                  (- (if ovl (overlay-get ovl 'company-column) 1) 1)))
-             (x-gtk-use-system-tooltips nil)
-             (fg-bg `(,company-quickhelp-color-foreground
-                      . ,company-quickhelp-color-background)))
-        (when (and ovl doc)
-          (with-no-warnings
-            (if company-quickhelp-use-propertized-text
-                (let* ((frame (window-frame (selected-window)))
-                       (max-width (pos-tip-x-display-width frame))
-                       (max-height (pos-tip-x-display-height frame))
-                       (w-h (pos-tip-string-width-height doc)))
-                  (cond
-                   ((> (car w-h) width)
-                    (setq doc (pos-tip-fill-string doc width nil 'none nil max-height)
-                          w-h (pos-tip-string-width-height doc)))
-                   ((or (> (car w-h) max-width)
-                        (> (cdr w-h) max-height))
-                    (setq doc (pos-tip-truncate-string doc max-width max-height)
-                          w-h (pos-tip-string-width-height doc))))
-                  (pos-tip-show-no-propertize doc fg-bg (overlay-start ovl) nil timeout
-                                              (pos-tip-tooltip-width (car w-h) (frame-char-width frame))
-                                              (pos-tip-tooltip-height (cdr w-h) (frame-char-height frame) frame)
-                                              nil (+ overlay-width overlay-position) 1))
-              (pos-tip-show doc fg-bg (overlay-start ovl) nil timeout width nil
-                            (+ overlay-width overlay-position) 1))))))))
+  (company-quickhelp--cancel-timer)
+  (let* ((selected (nth company-selection company-candidates))
+         (doc (let ((inhibit-message t))
+                (company-quickhelp--doc selected)))
+         (buffer (get-buffer-create company-quickhelp-buffer))
+         (col-row (posn-actual-col-row (posn-at-point (point))))
+         (row (cdr col-row))
+         (remaining-rows (- (window-height) 14 row)))
+    (unless (get-buffer-window buffer)
+      (cond
+       ((< remaining-rows 20)
+        (let ((window (display-buffer-use-some-window buffer nil)))
+          (set-window-dedicated-p window t)))
+       (t
+        (let ((window (display-buffer-below-selected
+                       buffer `((window-height . ,remaining-rows)))))
+          (set-window-dedicated-p window t)
+          (setq company-quickhelp-window-to-delete window)))))
+    (if doc
+        (ignore-errors
+          (with-current-buffer buffer
+            (erase-buffer)
+            (insert doc)
+            (goto-char (point-min))))
+      (company-quickhelp--hide))))
 
 (defun company-quickhelp--set-timer ()
   (when (or (null company-quickhelp--timer)
-        (eq this-command #'company-quickhelp-manual-begin))
+            (eq this-command #'company-quickhelp-manual-begin))
     (setq company-quickhelp--timer
           (run-with-idle-timer company-quickhelp-delay nil
                                'company-quickhelp--show))))
@@ -225,24 +220,18 @@ currently active `company' completion candidate."
 (defun company-quickhelp-hide ()
   (company-cancel))
 
-
-(defun company-quickhelp-pos-tip-available-p ()
-  "Return t if and only if pos-tip is expected work in the current frame."
-  (and
-   (fboundp 'x-hide-tip)
-   (fboundp 'x-show-tip)
-   (not (memq window-system (list nil 'pc)))))
-
 (defun company-quickhelp--enable ()
   (add-hook 'focus-out-hook #'company-quickhelp-hide nil t)
   (setq-local company-quickhelp--original-tooltip-width company-tooltip-minimum-width)
   (setq-local company-tooltip-minimum-width (max company-tooltip-minimum-width 40))
+  (add-hook 'company-after-completion-hook 'company-quickhelp--hide)
   (make-local-variable 'company-frontends)
   (add-to-list 'company-frontends 'company-quickhelp-frontend :append))
 
 (defun company-quickhelp--disable ()
   (remove-hook 'focus-out-hook #'company-quickhelp-hide t)
   (company-quickhelp--cancel-timer)
+  (remove-hook 'company-after-completion-hook 'company-quickhelp--hide)
   (setq-local company-tooltip-minimum-width company-quickhelp--original-tooltip-width)
   (setq-local company-frontends (delq 'company-quickhelp-frontend company-frontends)))
 
