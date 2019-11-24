@@ -78,6 +78,11 @@ be triggered manually using `company-quickhelp-show'."
                  (const :tag "Default" nil))
   :group 'company-quickhelp)
 
+(defcustom company-quickhelp-margin 10
+  "Margin between the quickhelp window and the point."
+  :type 'integer
+  :group 'company-quickhelp)
+
 (defvar-local company-quickhelp--timer nil
   "Quickhelp idle timer.")
 
@@ -188,7 +193,7 @@ currently active `company' completion candidate."
          (buffer (get-buffer-create company-quickhelp-buffer))
          (col-row (posn-actual-col-row (posn-at-point (point))))
          (row (cdr col-row))
-         (remaining-rows (- (window-height) 14 row)))
+         (remaining-rows (- (window-height) company-quickhelp-margin row)))
     (unless (get-buffer-window buffer)
       (cond
        ((< remaining-rows 20)
