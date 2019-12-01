@@ -208,6 +208,7 @@ currently active `company' completion candidate."
         (ignore-errors
           (with-current-buffer buffer
             (erase-buffer)
+            (visual-line-mode t)
             (insert doc)
             (goto-char (point-min))))
       (company-quickhelp--hide))))
